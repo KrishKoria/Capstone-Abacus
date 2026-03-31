@@ -22,7 +22,7 @@ PROMPT_TEMPLATE_VERSION = os.getenv("PROMPT_TEMPLATE_VERSION", "v1.1")
 TOP_N_SHAP = int(os.getenv("TOP_N_SHAP", "3"))
 MOCK_MODE = os.getenv("MOCK_MODE", "False").lower() == "true"
 
-UC_MODEL_NAME = os.getenv("UC_MODEL_NAME", "capstone.bronze.denial-risk-model")
+UC_MODEL_NAME = os.getenv("UC_MODEL_NAME", "capstone.default.denial-risk-model")
 
 PROVIDER_FEATURE_COLS = [
     "ClaimCount", "UniqueBeneficiaryCount", "UniqueClaimCount", "ClaimsPerBeneficiary",
