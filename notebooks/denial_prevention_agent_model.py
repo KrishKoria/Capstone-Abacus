@@ -302,25 +302,43 @@ def _prepare_inference_df(feature_vector: dict, feature_cols: list[str]) -> pd.D
 
 
 def _extract_positive_class_shap(model, X: pd.DataFrame) -> dict[str, float]:
-    if hasattr(model, "estimators_") or hasattr(model, "tree_"):
+    """
+    Returns SHAP values for the positive class in a consistent dict format.
+    Supports sklearn tree models, linear models, and XGBoost sklearn wrappers.
+    """
+    is_tree_model = (
+        hasattr(model, "estimators_")
+        or hasattr(model, "tree_")
+        or hasattr(model, "get_booster")
+        or model.__class__.__module__.startswith("xgboost")
+    )
+
+    if is_tree_model:
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X)
+
         if isinstance(shap_values, list):
             sv = shap_values[1][0] if len(shap_values) > 1 else shap_values[0][0]
         else:
             arr = np.array(shap_values)
             if arr.ndim == 3:
+                # SHAP >=0.45 may return (n_samples, n_features, n_outputs)
                 sv = arr[0, :, 1] if arr.shape[-1] > 1 else arr[0, :, 0]
             elif arr.ndim == 2:
+                # Common binary XGBoost / tree case: (n_samples, n_features)
                 sv = arr[0]
+            elif arr.ndim == 1:
+                sv = arr
             else:
                 raise ValueError(f"Unexpected SHAP output shape for tree model: {arr.shape}")
+
         return {col: float(val) for col, val in zip(X.columns, sv)}
 
     if hasattr(model, "coef_"):
         background = np.zeros((1, X.shape[1]), dtype=float)
         explainer = shap.LinearExplainer(model, background)
         shap_values = explainer.shap_values(X)
+
         if isinstance(shap_values, list):
             sv = shap_values[1][0] if len(shap_values) > 1 else shap_values[0][0]
         else:
@@ -329,11 +347,15 @@ def _extract_positive_class_shap(model, X: pd.DataFrame) -> dict[str, float]:
                 sv = arr[0]
             elif arr.ndim == 3:
                 sv = arr[0, :, 1] if arr.shape[-1] > 1 else arr[0, :, 0]
+            elif arr.ndim == 1:
+                sv = arr
             else:
                 raise ValueError(f"Unexpected SHAP output shape for linear model: {arr.shape}")
+
         return {col: float(val) for col, val in zip(X.columns, sv)}
 
-    raise TypeError(f"Unsupported model type for SHAP explanation: {type(model)}")
+    raise TypeError(
+        f"Unsupported model type for SHAP explanation: {type(model)}")
 
 
 def format_shap_for_prompt(shap_values: dict, top_n: int = TOP_N_SHAP) -> str:
