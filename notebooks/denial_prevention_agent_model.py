@@ -23,7 +23,6 @@ TOP_N_SHAP = int(os.getenv("TOP_N_SHAP", "3"))
 MOCK_MODE = os.getenv("MOCK_MODE", "False").lower() == "true"
 
 UC_MODEL_NAME = os.getenv("UC_MODEL_NAME", "capstone.bronze.denial-risk-model")
-UC_MODEL_URI = f"models:/{UC_MODEL_NAME}@Champion"
 
 PROVIDER_FEATURE_COLS = [
     "ClaimCount", "UniqueBeneficiaryCount", "UniqueClaimCount", "ClaimsPerBeneficiary",
@@ -161,7 +160,7 @@ Average Chronic Conditions per Patient: {avg_chronic_cond_count:.2f}
 
 === MODEL OUTPUT ===
 Anomaly Risk Score: {risk_score:.2f} (scale 0.0–1.0; threshold for high risk: 0.5)
-Risk Interpretation: {"HIGH RISK — recommend pre-submission review" if risk_score >= 0.5 else "LOW RISK"}
+Risk Interpretation: {risk_interpretation}
 
 Top {top_n} Contributing Factors (SHAP feature importance values):
 {shap_summary}
@@ -199,19 +198,25 @@ def _get_databricks_host() -> str:
 
 def _get_openai_client():
     from databricks.sdk import WorkspaceClient
-    from openai import OpenAI as DatabricksOpenAI
 
     ws = WorkspaceClient()
-    api_key = ws.config.token or os.getenv("DATABRICKS_TOKEN")
-    if not api_key:
-        raise RuntimeError("No Databricks API token available for LLM endpoint call.")
-    return DatabricksOpenAI(
-        base_url=f"{_get_databricks_host()}/serving-endpoints",
-        api_key=api_key,
-    )
+    # Prefer Databricks SDK helper for OpenAI-compatible serving endpoints.
+    try:
+        return ws.serving_endpoints.get_open_ai_client()
+    except Exception:
+        from openai import OpenAI as DatabricksOpenAI
+
+        api_key = ws.config.token or os.getenv("DATABRICKS_TOKEN")
+        if not api_key:
+            raise RuntimeError("No Databricks API token available for LLM endpoint call.")
+        return DatabricksOpenAI(
+            base_url=f"{_get_databricks_host()}/serving-endpoints",
+            api_key=api_key,
+        )
 
 
 def _fhir_get(
+
     resource_type: str,
     params: dict | None = None,
     resource_id: str | None = None,
@@ -265,17 +270,24 @@ def _map_chronic_conditions(conditions: list[dict]) -> dict:
     return flags
 
 
-def _get_champion_model_version():
+def _get_target_model_version():
     client = mlflow.tracking.MlflowClient()
-    mv = client.get_model_version_by_alias(UC_MODEL_NAME, "Champion")
-    if mv is None:
-        raise RuntimeError(f"No model alias 'Champion' found for {UC_MODEL_NAME}")
-    return mv
+    try:
+        mv = client.get_model_version_by_alias(UC_MODEL_NAME, "Champion")
+        if mv is not None:
+            return mv
+    except Exception:
+        pass
+
+    versions = client.search_model_versions(f"name='{UC_MODEL_NAME}'")
+    if not versions:
+        raise RuntimeError(f"No registered model versions found for {UC_MODEL_NAME}")
+    return max(versions, key=lambda mv: int(mv.version))
 
 
 def _load_feature_columns() -> list[str]:
     try:
-        mv = _get_champion_model_version()
+        mv = _get_target_model_version()
         client = mlflow.tracking.MlflowClient()
         local_dir = mlflow.artifacts.download_artifacts(
             artifact_uri=f"runs:/{mv.run_id}/feature_columns.json"
@@ -383,6 +395,10 @@ def build_prompt(feature_vector: dict, prediction: dict) -> tuple[str, str]:
     claim_type_label = "Inpatient" if feature_vector.get("_claim_type") == 1 else "Outpatient"
     shap_summary = format_shap_for_prompt(prediction["shap_values"])
     risk_score = prediction["risk_score"]
+    risk_interpretation = (
+        "HIGH RISK — recommend pre-submission review"
+        if risk_score >= 0.5 else "LOW RISK"
+    )
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         patient_age=feature_vector.get("_patient_age", "Unknown"),
@@ -404,6 +420,7 @@ def build_prompt(feature_vector: dict, prediction: dict) -> tuple[str, str]:
         avg_patient_age=float(feature_vector.get("AvgPatientAge", 0.0)),
         avg_chronic_cond_count=float(feature_vector.get("AvgChronicCondCount", 0.0)),
         risk_score=risk_score,
+        risk_interpretation=risk_interpretation,
         top_n=TOP_N_SHAP,
         shap_summary=shap_summary,
     )
@@ -509,8 +526,9 @@ class DenialPreventionAgent(ChatAgent):
                 "ml_run_id": "mock_run_000",
             }
 
-        model = mlflow.sklearn.load_model(UC_MODEL_URI)
-        mv = _get_champion_model_version()
+        mv = _get_target_model_version()
+        model_uri = f"models:/{UC_MODEL_NAME}/{mv.version}"
+        model = mlflow.sklearn.load_model(model_uri)
         ml_run_id = mv.run_id
         feature_cols = _load_feature_columns()
         X = _prepare_inference_df(feature_vector, feature_cols)
