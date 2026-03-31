@@ -1,9 +1,9 @@
-
 import json
 import os
 import time
 import uuid
 from datetime import date, datetime
+from pathlib import Path
 from typing import Optional
 
 import mlflow
@@ -23,6 +23,10 @@ TOP_N_SHAP = int(os.getenv("TOP_N_SHAP", "3"))
 MOCK_MODE = os.getenv("MOCK_MODE", "False").lower() == "true"
 
 UC_MODEL_NAME = os.getenv("UC_MODEL_NAME", "capstone.default.denial-risk-model")
+UC_MODEL_VERSION = os.getenv("UC_MODEL_VERSION", "").strip()
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "databricks")
+MLFLOW_REGISTRY_URI = os.getenv("MLFLOW_REGISTRY_URI", "databricks-uc")
+os.environ.setdefault("MLFLOW_USE_DATABRICKS_SDK_MODEL_ARTIFACTS_REPO_FOR_UC", "True")
 
 PROVIDER_FEATURE_COLS = [
     "ClaimCount", "UniqueBeneficiaryCount", "UniqueClaimCount", "ClaimsPerBeneficiary",
@@ -129,7 +133,7 @@ based ONLY on the structured data provided to you.
 STRICT RULES — violations make the output unusable:
 1. Do NOT mention any diagnosis, condition, medication, or clinical detail that is not explicitly present in the input data.
 2. Do NOT speculate about patient health beyond the chronic condition flags provided.
-3. Frame all findings as "anomalous billing patterns that historically trigger payer audits and systemic claim denials" — NOT as proof of fraud.
+3. Frame all findings as \"anomalous billing patterns that historically trigger payer audits and systemic claim denials\" — NOT as proof of fraud.
 4. Output ONLY a single valid JSON object. No preamble, no explanation, no markdown fences.
 5. All three keys (denial_reasons, corrective_actions, risk_summary) are required.
 """
@@ -182,6 +186,25 @@ Return exactly this JSON schema — no extra keys, no missing keys:
 }}"""
 
 
+def _configure_mlflow():
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    except Exception:
+        pass
+    try:
+        mlflow.set_registry_uri(MLFLOW_REGISTRY_URI)
+    except Exception:
+        pass
+
+
+def _get_mlflow_client() -> mlflow.tracking.MlflowClient:
+    _configure_mlflow()
+    return mlflow.tracking.MlflowClient(
+        tracking_uri=MLFLOW_TRACKING_URI,
+        registry_uri=MLFLOW_REGISTRY_URI,
+    )
+
+
 def _get_databricks_host() -> str:
     host = os.getenv("DATABRICKS_HOST")
     if host:
@@ -200,12 +223,10 @@ def _get_openai_client():
     from databricks.sdk import WorkspaceClient
 
     ws = WorkspaceClient()
-    # Prefer Databricks SDK helper for OpenAI-compatible serving endpoints.
     try:
         return ws.serving_endpoints.get_open_ai_client()
     except Exception:
         from openai import OpenAI as DatabricksOpenAI
-
         api_key = ws.config.token or os.getenv("DATABRICKS_TOKEN")
         if not api_key:
             raise RuntimeError("No Databricks API token available for LLM endpoint call.")
@@ -216,7 +237,6 @@ def _get_openai_client():
 
 
 def _fhir_get(
-
     resource_type: str,
     params: dict | None = None,
     resource_id: str | None = None,
@@ -270,37 +290,6 @@ def _map_chronic_conditions(conditions: list[dict]) -> dict:
     return flags
 
 
-def _get_target_model_version():
-    client = mlflow.tracking.MlflowClient()
-    try:
-        mv = client.get_model_version_by_alias(UC_MODEL_NAME, "Champion")
-        if mv is not None:
-            return mv
-    except Exception:
-        pass
-
-    versions = client.search_model_versions(f"name='{UC_MODEL_NAME}'")
-    if not versions:
-        raise RuntimeError(f"No registered model versions found for {UC_MODEL_NAME}")
-    return max(versions, key=lambda mv: int(mv.version))
-
-
-def _load_feature_columns() -> list[str]:
-    try:
-        mv = _get_target_model_version()
-        client = mlflow.tracking.MlflowClient()
-        local_dir = mlflow.artifacts.download_artifacts(
-            artifact_uri=f"runs:/{mv.run_id}/feature_columns.json"
-        )
-        with open(local_dir, "r") as f:
-            cols = json.load(f)
-        if isinstance(cols, list) and cols:
-            return cols
-    except Exception:
-        pass
-    return PROVIDER_FEATURE_COLS
-
-
 def _prepare_inference_df(feature_vector: dict, feature_cols: list[str]) -> pd.DataFrame:
     row = {k: v for k, v in feature_vector.items() if not k.startswith("_")}
     for col in feature_cols:
@@ -314,10 +303,6 @@ def _prepare_inference_df(feature_vector: dict, feature_cols: list[str]) -> pd.D
 
 
 def _extract_positive_class_shap(model, X: pd.DataFrame) -> dict[str, float]:
-    """
-    Returns SHAP values for the positive class in a consistent dict format.
-    Supports sklearn tree models, linear models, and XGBoost sklearn wrappers.
-    """
     is_tree_model = (
         hasattr(model, "estimators_")
         or hasattr(model, "tree_")
@@ -328,29 +313,24 @@ def _extract_positive_class_shap(model, X: pd.DataFrame) -> dict[str, float]:
     if is_tree_model:
         explainer = shap.TreeExplainer(model)
         shap_values = explainer.shap_values(X)
-
         if isinstance(shap_values, list):
             sv = shap_values[1][0] if len(shap_values) > 1 else shap_values[0][0]
         else:
             arr = np.array(shap_values)
             if arr.ndim == 3:
-                # SHAP >=0.45 may return (n_samples, n_features, n_outputs)
                 sv = arr[0, :, 1] if arr.shape[-1] > 1 else arr[0, :, 0]
             elif arr.ndim == 2:
-                # Common binary XGBoost / tree case: (n_samples, n_features)
                 sv = arr[0]
             elif arr.ndim == 1:
                 sv = arr
             else:
                 raise ValueError(f"Unexpected SHAP output shape for tree model: {arr.shape}")
-
         return {col: float(val) for col, val in zip(X.columns, sv)}
 
     if hasattr(model, "coef_"):
         background = np.zeros((1, X.shape[1]), dtype=float)
         explainer = shap.LinearExplainer(model, background)
         shap_values = explainer.shap_values(X)
-
         if isinstance(shap_values, list):
             sv = shap_values[1][0] if len(shap_values) > 1 else shap_values[0][0]
         else:
@@ -363,11 +343,9 @@ def _extract_positive_class_shap(model, X: pd.DataFrame) -> dict[str, float]:
                 sv = arr
             else:
                 raise ValueError(f"Unexpected SHAP output shape for linear model: {arr.shape}")
-
         return {col: float(val) for col, val in zip(X.columns, sv)}
 
-    raise TypeError(
-        f"Unsupported model type for SHAP explanation: {type(model)}")
+    raise TypeError(f"Unsupported model type for SHAP explanation: {type(model)}")
 
 
 def format_shap_for_prompt(shap_values: dict, top_n: int = TOP_N_SHAP) -> str:
@@ -430,10 +408,28 @@ def build_prompt(feature_vector: dict, prediction: dict) -> tuple[str, str]:
 
 class DenialPreventionAgent(ChatAgent):
     def load_context(self, context):
+        _configure_mlflow()
+
         lookup = pd.read_csv(context.artifacts["provider_lookup_csv"])
         if "Provider" not in lookup.columns:
             raise ValueError("provider_lookup_csv must contain a 'Provider' column.")
         self.provider_lookup = lookup.set_index("Provider", drop=False)
+
+        self.feature_cols = PROVIDER_FEATURE_COLS.copy()
+        self.risk_model = None
+        self.risk_model_source = "uninitialized"
+
+        local_feature_cols_path = context.artifacts.get("feature_columns_json")
+        if local_feature_cols_path and Path(local_feature_cols_path).exists():
+            with open(local_feature_cols_path, "r") as f:
+                cols = json.load(f)
+            if isinstance(cols, list) and cols:
+                self.feature_cols = cols
+
+        local_model_path = context.artifacts.get("risk_model")
+        if local_model_path and Path(local_model_path).exists():
+            self.risk_model = mlflow.sklearn.load_model(local_model_path)
+            self.risk_model_source = f"artifact:{local_model_path}"
 
     def _get_provider_stats(self, provider_id: str) -> dict:
         if provider_id in self.provider_lookup.index:
@@ -442,6 +438,64 @@ class DenialPreventionAgent(ChatAgent):
                 row = row.iloc[0]
             return {col: float(row.get(col, 0.0) or 0.0) for col in PROVIDER_FEATURE_COLS}
         return {col: 0.0 for col in PROVIDER_FEATURE_COLS}
+
+    def _resolve_registry_model_version(self):
+        client = _get_mlflow_client()
+
+        if UC_MODEL_VERSION:
+            try:
+                mv = client.get_model_version(name=UC_MODEL_NAME, version=UC_MODEL_VERSION)
+                return mv
+            except Exception as e:
+                raise RuntimeError(
+                    f"Pinned UC_MODEL_VERSION={UC_MODEL_VERSION} could not be loaded for {UC_MODEL_NAME}: {e}"
+                ) from e
+
+        try:
+            mv = client.get_model_version_by_alias(UC_MODEL_NAME, "Champion")
+            if mv is not None:
+                return mv
+        except Exception:
+            pass
+
+        try:
+            versions = client.search_model_versions(f"name='{UC_MODEL_NAME}'")
+        except Exception as e:
+            raise RuntimeError(
+                "MLflow registry lookup failed. This usually means the serving endpoint is not using "
+                f"the UC registry URI, or the endpoint identity cannot access model {UC_MODEL_NAME}. "
+                f"tracking_uri={MLFLOW_TRACKING_URI}, registry_uri={MLFLOW_REGISTRY_URI}. Root error: {e}"
+            ) from e
+
+        if not versions:
+            raise RuntimeError(
+                f"No registered model versions found for {UC_MODEL_NAME}. "
+                "Either the name is wrong, the model was never registered in Unity Catalog, "
+                "or the serving identity cannot see it."
+            )
+        return max(versions, key=lambda mv: int(mv.version))
+
+    def _load_registry_model_if_needed(self):
+        if self.risk_model is not None:
+            return self.risk_model, self.feature_cols, self.risk_model_source
+
+        mv = self._resolve_registry_model_version()
+        model_uri = f"models:/{UC_MODEL_NAME}/{mv.version}"
+        model = mlflow.sklearn.load_model(model_uri)
+
+        feature_cols = self.feature_cols
+        try:
+            local_path = mlflow.artifacts.download_artifacts(
+                artifact_uri=f"runs:/{mv.run_id}/feature_columns.json"
+            )
+            with open(local_path, "r") as f:
+                cols = json.load(f)
+            if isinstance(cols, list) and cols:
+                feature_cols = cols
+        except Exception:
+            pass
+
+        return model, feature_cols, f"registry:{model_uri}"
 
     def get_patient_from_fhir(self, patient_id: str) -> dict:
         patient = _fhir_get("Patient", resource_id=patient_id)
@@ -524,13 +578,10 @@ class DenialPreventionAgent(ChatAgent):
                     "AvgLOS": 0.09,
                 },
                 "ml_run_id": "mock_run_000",
+                "model_source": "mock",
             }
 
-        mv = _get_target_model_version()
-        model_uri = f"models:/{UC_MODEL_NAME}/{mv.version}"
-        model = mlflow.sklearn.load_model(model_uri)
-        ml_run_id = mv.run_id
-        feature_cols = _load_feature_columns()
+        model, feature_cols, model_source = self._load_registry_model_if_needed()
         X = _prepare_inference_df(feature_vector, feature_cols)
 
         if not hasattr(model, "predict_proba"):
@@ -542,7 +593,8 @@ class DenialPreventionAgent(ChatAgent):
         return {
             "risk_score": risk_score,
             "shap_values": shap_dict,
-            "ml_run_id": ml_run_id,
+            "ml_run_id": getattr(model, "run_id", "unknown"),
+            "model_source": model_source,
         }
 
     def call_llm(self, feature_vector: dict, prediction: dict) -> dict:
@@ -610,6 +662,7 @@ class DenialPreventionAgent(ChatAgent):
                     "llm_endpoint": LLM_ENDPOINT,
                     "top_n_shap": TOP_N_SHAP,
                     "mock_mode": str(MOCK_MODE),
+                    "model_source": prediction.get("model_source", "unknown"),
                 })
                 mlflow.log_metrics({
                     "risk_score": prediction["risk_score"],
@@ -655,9 +708,9 @@ class DenialPreventionAgent(ChatAgent):
         actions = "\n".join(f"  {i+1}. {a}" for i, a in enumerate(llm_response["corrective_actions"]))
 
         footer = (
-            f"*Prompt: `{PROMPT_TEMPLATE_VERSION}` · LLM endpoint: `{LLM_ENDPOINT}`*"
+            f"*Prompt: `{PROMPT_TEMPLATE_VERSION}` · LLM endpoint: `{LLM_ENDPOINT}` · Model source: `{prediction.get('model_source', 'unknown')}`*"
             if run_id == "not-logged"
-            else f"*MLflow run ID: `{run_id}` · Prompt: `{PROMPT_TEMPLATE_VERSION}` · LLM endpoint: `{LLM_ENDPOINT}`*"
+            else f"*MLflow run ID: `{run_id}` · Prompt: `{PROMPT_TEMPLATE_VERSION}` · LLM endpoint: `{LLM_ENDPOINT}` · Model source: `{prediction.get('model_source', 'unknown')}`*"
         )
 
         return f"""Claim Anomaly Risk Report
@@ -713,7 +766,8 @@ class DenialPreventionAgent(ChatAgent):
         except Exception as e:
             reply = (
                 f"⚠️ Error processing patient `{patient_id}`:\n```\n{str(e)}\n```\n\n"
-                "Please verify the patient ID exists on the FHIR server and try again."
+                "This is not necessarily a FHIR patient-ID problem. It can also be caused by a missing / inaccessible ML model, "
+                "wrong Unity Catalog model name, wrong MLflow registry URI, or serving-endpoint permissions."
             )
 
         return ChatAgentResponse(messages=[
