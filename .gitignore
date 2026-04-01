@@ -12,5 +12,3 @@ wheels/
 openspec/
 .DS_Store
 data/
-
-*.json

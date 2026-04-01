@@ -1,0 +1,1015 @@
+{
+  "datasets": [
+    {
+      "name": "ds_1_overall_risk",
+      "displayName": "1. Overall Provider Risk Breakdown",
+      "queryLines": [
+        "SELECT \n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    COUNT(*) AS Provider_Count\n",
+        "FROM capstone.bronze.train_features\n",
+        "GROUP BY PotentialFraud"
+      ]
+    },
+    {
+      "name": "ds_2_financial_exposure",
+      "displayName": "2. Total Financial Exposure",
+      "queryLines": [
+        "SELECT \n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    SUM(InscClaimAmtReimbursed) AS Total_Reimbursed\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY PotentialFraud"
+      ]
+    },
+    {
+      "name": "ds_3_amount_buckets",
+      "displayName": "3. Fraud Rate by Claim Amount Buckets",
+      "queryLines": [
+        "SELECT\n",
+        "    CASE\n",
+        "        WHEN InscClaimAmtReimbursed < 1000  THEN '< $1K'\n",
+        "        WHEN InscClaimAmtReimbursed < 5000  THEN '$1K\u2013$5K'\n",
+        "        WHEN InscClaimAmtReimbursed < 10000 THEN '$5K\u2013$10K'\n",
+        "        WHEN InscClaimAmtReimbursed < 50000 THEN '$10K\u2013$50K'\n",
+        "        ELSE '> $50K'\n",
+        "    END AS Amount_Bucket,\n",
+        "    CASE\n",
+        "        WHEN InscClaimAmtReimbursed < 1000  THEN 1\n",
+        "        WHEN InscClaimAmtReimbursed < 5000  THEN 2\n",
+        "        WHEN InscClaimAmtReimbursed < 10000 THEN 3\n",
+        "        WHEN InscClaimAmtReimbursed < 50000 THEN 4\n",
+        "        ELSE 5\n",
+        "    END AS Sort_Order,\n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    COUNT(*) AS Claim_Count\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY Amount_Bucket, Sort_Order, PotentialFraud\n",
+        "ORDER BY Sort_Order"
+      ]
+    },
+    {
+      "name": "ds_4_provider_behavior",
+      "displayName": "4. Provider Behavior (Scatter Plot)",
+      "queryLines": [
+        "SELECT \n",
+        "    Provider, \n",
+        "    ClaimCount, \n",
+        "    AvgClaimAmt, \n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type\n",
+        "FROM capstone.bronze.train_features"
+      ]
+    },
+    {
+      "name": "ds_5_inpatient_outpatient",
+      "displayName": "5. Inpatient vs. Outpatient Risk",
+      "queryLines": [
+        "SELECT \n",
+        "    claim_type,\n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    COUNT(*) AS Claim_Count\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY claim_type, PotentialFraud"
+      ]
+    },
+    {
+      "name": "ds_6_care_duration",
+      "displayName": "6. Care Duration Anomaly Spread",
+      "queryLines": [
+        "SELECT \n",
+        "    ClaimDuration,\n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    COUNT(*) AS Claim_Count\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "WHERE ClaimDuration >= 0 AND ClaimDuration <= 30 \n",
+        "GROUP BY ClaimDuration, PotentialFraud\n",
+        "ORDER BY ClaimDuration"
+      ]
+    },
+    {
+      "name": "ds_7_upcoding",
+      "displayName": "7. Upcoding Detection (Chronic Conditions)",
+      "queryLines": [
+        "SELECT \n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    AVG(ChronicConditionCount) AS Avg_Conditions_Per_Patient\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY PotentialFraud"
+      ]
+    },
+    {
+      "name": "ds_8_regional_fraud",
+      "displayName": "8. Top 10 High-Risk States",
+      "queryLines": [
+        "SELECT \n",
+        "    State, \n",
+        "    COUNT(DISTINCT Provider) as Fraud_Count\n",
+        "FROM capstone.bronze.train_features\n",
+        "WHERE PotentialFraud = 1\n",
+        "GROUP BY State\n",
+        "ORDER BY Fraud_Count DESC\n",
+        "LIMIT 10"
+      ]
+    },
+    {
+      "name": "ds_9_demographics",
+      "displayName": "9. Most Exploited Demographics (Age)",
+      "queryLines": [
+        "SELECT \n",
+        "    CASE \n",
+        "        WHEN Age < 40 THEN '< 40'\n",
+        "        WHEN Age BETWEEN 40 AND 64 THEN '40 - 64'\n",
+        "        WHEN Age BETWEEN 65 AND 80 THEN '65 - 80'\n",
+        "        ELSE '80+' \n",
+        "    END AS Age_Group,\n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
+        "    COUNT(DISTINCT Beneficiary_ID) AS Patient_Count\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY Age_Group, PotentialFraud\n",
+        "ORDER BY Age_Group"
+      ]
+    },
+    {
+      "name": "ds_10_ai_risk",
+      "displayName": "10. AI Anomaly Risk Score (Action Queue)",
+      "queryLines": [
+        "SELECT \n",
+        "    CASE \n",
+        "        WHEN Risk_Score >= 0.75 THEN '1. High Risk (Audit Immediately)'\n",
+        "        WHEN Risk_Score >= 0.40 THEN '2. Medium Risk (Review)'\n",
+        "        ELSE '3. Low Risk (Auto-Approve)'\n",
+        "    END AS Risk_Tier,\n",
+        "    COUNT(*) AS Provider_Count\n",
+        "FROM capstone.bronze.provider_lookup\n",
+        "GROUP BY Risk_Tier\n",
+        "ORDER BY Risk_Tier"
+      ]
+    },
+    {
+      "name": "0b0c98d6",
+      "displayName": "Fraud Analysis by Age Group and Chronic Conditions",
+      "queryLines": [
+        "SELECT \r\n",
+        "    CASE \r\n",
+        "        WHEN Age < 40 THEN '1. < 40'\r\n",
+        "        WHEN Age BETWEEN 40 AND 64 THEN '2. 40-64'\r\n",
+        "        WHEN Age BETWEEN 65 AND 80 THEN '3. 65-80'\r\n",
+        "        ELSE '4. 80+' \r\n",
+        "    END AS Age_Group,\r\n",
+        "    ChronicConditionCount AS Chronic_Conditions,\r\n",
+        "    AVG(CAST(PotentialFraud AS FLOAT)) * 100 AS Fraud_Rate_Percentage\r\n",
+        "FROM capstone.bronze.claims_engineered\r\n",
+        "GROUP BY Age_Group, ChronicConditionCount"
+      ]
+    },
+    {
+      "name": "0e6b49fa",
+      "displayName": "Legitimate vs Fraud Record Counts",
+      "queryLines": [
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN PotentialFraud = 1 THEN 'Fraudulent'\n",
+        "    ELSE 'Legitimate'\n",
+        "  END AS Record_Type,\n",
+        "  COUNT(*) AS Record_Count\n",
+        "FROM\n",
+        "  capstone.bronze.claims_engineered\n",
+        "GROUP BY\n",
+        "  PotentialFraud"
+      ]
+    },
+    {
+      "name": "c94bb510",
+      "displayName": "Healthcare Fraud Totals by Care Setting Summary",
+      "queryLines": [
+        "SELECT \r\n",
+        "    CASE WHEN claim_type = 1 THEN 'Inpatient Hospital Stays' \r\n",
+        "         ELSE 'Outpatient / Clinic Visits' END AS Care_Setting,\r\n",
+        "    SUM(InscClaimAmtReimbursed) AS Total_Fraud_Dollars\r\n",
+        "FROM capstone.bronze.claims_engineered\r\n",
+        "WHERE PotentialFraud = 1\r\n",
+        "GROUP BY claim_type"
+      ]
+    },
+    {
+      "name": "a7749ccc",
+      "displayName": "Provider Risk Score Tiers",
+      "queryLines": [
+        "SELECT\n",
+        "  '1. Total Providers Evaluated' AS Funnel_Stage,\n",
+        "  COUNT(*) AS Provider_Count\n",
+        "FROM\n",
+        "  capstone.bronze.provider_lookup\n",
+        "\n",
+        "UNION ALL\n",
+        "\n",
+        "SELECT\n",
+        "  '2. Flagged as High/Medium Risk',\n",
+        "  COUNT(*)\n",
+        "FROM\n",
+        "  capstone.bronze.provider_lookup\n",
+        "WHERE\n",
+        "  (\n",
+        "    (AvgClaimAmt / 57000.0) * 0.3\n",
+        "    + InpatientRate * 0.25\n",
+        "    + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25\n",
+        "    + LEAST(DeceasedPatientRate * 50, 1.0) * 0.2\n",
+        "  ) >= 0.40\n",
+        "\n",
+        "UNION ALL\n",
+        "\n",
+        "SELECT\n",
+        "  '3. Sent to LLM for Review',\n",
+        "  COUNT(*)\n",
+        "FROM\n",
+        "  capstone.bronze.provider_lookup\n",
+        "WHERE\n",
+        "  (\n",
+        "    (AvgClaimAmt / 57000.0) * 0.3\n",
+        "    + InpatientRate * 0.25\n",
+        "    + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25\n",
+        "    + LEAST(DeceasedPatientRate * 50, 1.0) * 0.2\n",
+        "  ) >= 0.75"
+      ]
+    },
+    {
+      "name": "a80f25f0",
+      "displayName": "Provider Risk Assessment Funnel Summary",
+      "queryLines": [
+        "SELECT \n",
+        "    '1. Total Providers Evaluated' AS Funnel_Stage, COUNT(*) AS Volume FROM capstone.bronze.provider_lookup\n",
+        "UNION ALL\n",
+        "SELECT \n",
+        "    '2. Flagged as High/Medium Risk', COUNT(*) FROM capstone.bronze.provider_lookup WHERE Risk_Score >= 0.40\n",
+        "UNION ALL\n",
+        "SELECT \n",
+        "    '3. Sent to LLM for Review', COUNT(*) FROM capstone.bronze.provider_lookup WHERE Risk_Score >= 0.75\n",
+        "ORDER BY Funnel_Stage"
+      ]
+    },
+    {
+      "name": "ff29c32d",
+      "displayName": "Claim Feature Importance Rankings Summary",
+      "queryLines": [
+        "SELECT 'ClaimAmtZScore' AS Feature, 0.42 AS Importance\n",
+        "UNION ALL\n",
+        "SELECT 'ChronicConditionCount', 0.31\n",
+        "UNION ALL\n",
+        "SELECT 'ProviderAvgClaimAmt', 0.27\n",
+        "UNION ALL\n",
+        "SELECT 'ClaimDuration', 0.21\n",
+        "UNION ALL\n",
+        "SELECT 'DiagnosisCodeCount', 0.18"
+      ]
+    },
+    {
+      "name": "6bf55163",
+      "displayName": "Model Performance Comparison Summary",
+      "queryLines": [
+        "SELECT 'Logistic Regression' AS Model, 0.84 AS Precision, 0.77 AS Recall, 0.80 AS F1, 0.89 AS ROC_AUC\n",
+        "UNION ALL\n",
+        "SELECT 'Decision Tree', 0.81, 0.79, 0.80, 0.87\n",
+        "UNION ALL\n",
+        "SELECT 'XGBoost', 0.91, 0.86, 0.88, 0.95"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "dbdb3f35",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "2017d4ef",
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {},
+              "frame": {
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "d0355c19",
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {},
+              "frame": {
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "dfc0b398",
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {},
+              "frame": {
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "main_canvas",
+      "displayName": "Denial Prevention AI - Executive Dashboard",
+      "layout": [
+        {
+          "widget": {
+            "name": "4312d18a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_1_overall_risk",
+                  "fields": [
+                    {
+                      "name": "sum(Provider_Count)",
+                      "expression": "SUM(`Provider_Count`)"
+                    },
+                    {
+                      "name": "Provider_Count",
+                      "expression": "`Provider_Count`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "frame": {
+                "showDescription": false,
+                "showTitle": true,
+                "title": "1. Legitimate vs Fraud Entities"
+              },
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(Provider_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Legitimate vs Fraud Claims"
+                },
+                "color": {
+                  "fieldName": "Provider_Count",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": 4904,
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 4
+                        }
+                      },
+                      {
+                        "value": 3913,
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 6
+                        }
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "4dfd7a3a",
+            "multilineTextboxSpec": {
+              "lines": [
+                "\n# \ud83d\udee1\ufe0f Predictive Denial Prevention AI\n**Executive Analytics Dashboard**  \n*Identifying fraudulent and irregular provider billing patterns to minimize financial exposure.*\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "d0631b4c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_2_financial_exposure",
+                  "fields": [
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    },
+                    {
+                      "name": "sum(Total_Reimbursed)",
+                      "expression": "SUM(`Total_Reimbursed`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(Total_Reimbursed)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Legitimate",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "value": "Fraudulent",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 1
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "5da8cc8b",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_3_amount_buckets",
+                  "fields": [
+                    {
+                      "name": "Amount_Bucket",
+                      "expression": "`Amount_Bucket`"
+                    },
+                    {
+                      "name": "sum(Claim_Count)",
+                      "expression": "SUM(`Claim_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "Amount_Bucket",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Claim_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Amount_Bucket",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "< $1K",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 10
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 19,
+            "width": 4,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "4c67229c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_4_provider_behavior",
+                  "fields": [
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    },
+                    {
+                      "name": "ClaimCount",
+                      "expression": "`ClaimCount`"
+                    },
+                    {
+                      "name": "AvgClaimAmt",
+                      "expression": "`AvgClaimAmt`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "5. Provider Outliers (Volume vs Cost)"
+              },
+              "widgetType": "scatter",
+              "encodings": {
+                "x": {
+                  "fieldName": "ClaimCount",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "AvgClaimAmt",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 8,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "ed28f3be",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0e6b49fa",
+                  "fields": [
+                    {
+                      "name": "Record_Type",
+                      "expression": "`Record_Type`"
+                    },
+                    {
+                      "name": "sum(Record_Count)",
+                      "expression": "SUM(`Record_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "title": "2. Volume of Claims: Fraud v. Legitimate",
+                "showTitle": true
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "Record_Type",
+                  "displayName": "Record Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Record_Count)",
+                  "displayName": "Record Count",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Record_Type",
+                  "displayName": "Record Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "cebc20e5",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "c94bb510",
+                  "fields": [
+                    {
+                      "name": "sum(Total_Fraud_Dollars)",
+                      "expression": "SUM(`Total_Fraud_Dollars`)"
+                    },
+                    {
+                      "name": "Care_Setting",
+                      "expression": "`Care_Setting`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(Total_Fraud_Dollars)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Care_Setting",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "76c95043",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ff29c32d",
+                  "fields": [
+                    {
+                      "name": "sum(Importance)",
+                      "expression": "SUM(`Importance`)"
+                    },
+                    {
+                      "name": "Feature",
+                      "expression": "`Feature`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(Importance)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "Feature",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 29,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "md_break1",
+            "multilineTextboxSpec": {
+              "lines": [
+                "\n## \ud83c\udfe5 Healthcare Demographics & Settings\n*Distribution of fraud and reimbursements across inpatient and outpatient care environments.*\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "md_break2",
+            "multilineTextboxSpec": {
+              "lines": [
+                "\n## \ud83d\udea8 Provider Behavioral Anomalies\n*Visualizing provider claim frequency against average reimbursement to isolate high-risk actors.*\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "md_break3",
+            "multilineTextboxSpec": {
+              "lines": [
+                "\n## \ud83e\udde0 ML Feature Importance\n*Key drivers and signals indicating provider anomaly via XGBoost Model Insights.*\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 27,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "c8b3e7c4",
+      "displayName": "Untitled page 1",
+      "layout": [
+        {
+          "widget": {
+            "name": "fc0809b1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6bf55163",
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {}
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 11,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
