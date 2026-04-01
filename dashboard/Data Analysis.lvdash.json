@@ -206,6 +206,40 @@
       ]
     },
     {
+      "name": "ds_filter_provider_type",
+      "displayName": "Filter Values - Provider Type",
+      "queryLines": [
+        "SELECT\n",
+        "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY Provider_Type\n",
+        "ORDER BY Provider_Type"
+      ]
+    },
+    {
+      "name": "ds_filter_claim_setting",
+      "displayName": "Filter Values - Claim Setting",
+      "queryLines": [
+        "SELECT\n",
+        "    CASE WHEN claim_type = 1 THEN 'Inpatient' ELSE 'Outpatient' END AS Claim_Setting\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "GROUP BY Claim_Setting\n",
+        "ORDER BY Claim_Setting"
+      ]
+    },
+    {
+      "name": "ds_filter_state",
+      "displayName": "Filter Values - State",
+      "queryLines": [
+        "SELECT\n",
+        "    State\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "WHERE State IS NOT NULL\n",
+        "GROUP BY State\n",
+        "ORDER BY State"
+      ]
+    },
+    {
       "name": "0b0c98d6",
       "displayName": "Fraud Analysis by Age Group and Chronic Conditions",
       "queryLines": [
@@ -342,12 +376,35 @@
         {
           "widget": {
             "name": "2017d4ef",
+            "queries": [
+              {
+                "name": "provider_type_filter_query",
+                "query": {
+                  "datasetName": "ds_filter_provider_type",
+                  "fields": [
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
             "spec": {
               "version": 2,
               "widgetType": "filter-single-select",
-              "encodings": {},
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "Provider_Type",
+                    "queryName": "provider_type_filter_query"
+                  }
+                ]
+              },
               "frame": {
-                "showTitle": true
+                "showTitle": true,
+                "title": "Provider Type"
               }
             }
           },
@@ -361,12 +418,35 @@
         {
           "widget": {
             "name": "d0355c19",
+            "queries": [
+              {
+                "name": "claim_setting_filter_query",
+                "query": {
+                  "datasetName": "ds_filter_claim_setting",
+                  "fields": [
+                    {
+                      "name": "Claim_Setting",
+                      "expression": "`Claim_Setting`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
             "spec": {
               "version": 2,
               "widgetType": "filter-single-select",
-              "encodings": {},
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "Claim_Setting",
+                    "queryName": "claim_setting_filter_query"
+                  }
+                ]
+              },
               "frame": {
-                "showTitle": true
+                "showTitle": true,
+                "title": "Claim Setting"
               }
             }
           },
@@ -380,12 +460,35 @@
         {
           "widget": {
             "name": "dfc0b398",
+            "queries": [
+              {
+                "name": "state_filter_query",
+                "query": {
+                  "datasetName": "ds_filter_state",
+                  "fields": [
+                    {
+                      "name": "State",
+                      "expression": "`State`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
             "spec": {
               "version": 2,
               "widgetType": "filter-single-select",
-              "encodings": {},
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "State",
+                    "queryName": "state_filter_query"
+                  }
+                ]
+              },
               "frame": {
-                "showTitle": true
+                "showTitle": true,
+                "title": "State"
               }
             }
           },
