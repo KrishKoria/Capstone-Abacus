@@ -65,11 +65,11 @@
       "displayName": "5. Inpatient vs. Outpatient Risk",
       "queryLines": [
         "SELECT \n",
-        "    claim_type,\n",
+        "    CASE WHEN claim_type = 1 THEN 'Inpatient' ELSE 'Outpatient' END AS Claim_Setting,\n",
         "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
         "    COUNT(*) AS Claim_Count\n",
         "FROM capstone.bronze.claims_engineered\n",
-        "GROUP BY claim_type, PotentialFraud"
+        "GROUP BY Claim_Setting, PotentialFraud"
       ]
     },
     {
@@ -104,7 +104,7 @@
         "SELECT \n",
         "    State, \n",
         "    COUNT(DISTINCT Provider) as Fraud_Count\n",
-        "FROM capstone.bronze.train_features\n",
+        "FROM capstone.bronze.claims_engineered\n",
         "WHERE PotentialFraud = 1\n",
         "GROUP BY State\n",
         "ORDER BY Fraud_Count DESC\n",
@@ -117,13 +117,13 @@
       "queryLines": [
         "SELECT \n",
         "    CASE \n",
-        "        WHEN Age < 40 THEN '< 40'\n",
-        "        WHEN Age BETWEEN 40 AND 64 THEN '40 - 64'\n",
-        "        WHEN Age BETWEEN 65 AND 80 THEN '65 - 80'\n",
-        "        ELSE '80+' \n",
+        "        WHEN Age < 40 THEN '1. < 40'\n",
+        "        WHEN Age BETWEEN 40 AND 64 THEN '2. 40 - 64'\n",
+        "        WHEN Age BETWEEN 65 AND 80 THEN '3. 65 - 80'\n",
+        "        ELSE '4. 80+' \n",
         "    END AS Age_Group,\n",
         "    CASE WHEN PotentialFraud = 1 THEN 'Fraudulent' ELSE 'Legitimate' END AS Provider_Type,\n",
-        "    COUNT(DISTINCT Beneficiary_ID) AS Patient_Count\n",
+        "    COUNT(DISTINCT BeneID) AS Patient_Count\n",
         "FROM capstone.bronze.claims_engineered\n",
         "GROUP BY Age_Group, PotentialFraud\n",
         "ORDER BY Age_Group"
@@ -140,9 +140,69 @@
         "        ELSE '3. Low Risk (Auto-Approve)'\n",
         "    END AS Risk_Tier,\n",
         "    COUNT(*) AS Provider_Count\n",
-        "FROM capstone.bronze.provider_lookup\n",
+        "FROM (\n",
+        "    SELECT\n",
+        "        Provider,\n",
+        "        (\n",
+        "            (AvgClaimAmt / 57000.0) * 0.30\n",
+        "            + InpatientRate * 0.25\n",
+        "            + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25\n",
+        "            + LEAST(DeceasedPatientRate * 50, 1.0) * 0.20\n",
+        "        ) AS Risk_Score\n",
+        "    FROM capstone.bronze.provider_lookup\n",
+        ") scored\n",
         "GROUP BY Risk_Tier\n",
         "ORDER BY Risk_Tier"
+      ]
+    },
+    {
+      "name": "ds_11_provider_action_queue",
+      "displayName": "11. Provider Action Queue (Top 20)",
+      "queryLines": [
+        "SELECT\n",
+        "    Provider,\n",
+        "    ROUND(Risk_Score, 4) AS Risk_Score,\n",
+        "    ROUND(TotalClaimAmt, 2) AS Total_Exposure,\n",
+        "    ClaimCount,\n",
+        "    ROUND(AvgClaimAmt, 2) AS Avg_Claim_Amount,\n",
+        "    CASE\n",
+        "        WHEN Risk_Score >= 0.75 THEN 'High'\n",
+        "        WHEN Risk_Score >= 0.40 THEN 'Medium'\n",
+        "        ELSE 'Low'\n",
+        "    END AS Risk_Band\n",
+        "FROM (\n",
+        "    SELECT\n",
+        "        Provider,\n",
+        "        ClaimCount,\n",
+        "        AvgClaimAmt,\n",
+        "        TotalClaimAmt,\n",
+        "        (\n",
+        "            (AvgClaimAmt / 57000.0) * 0.30\n",
+        "            + InpatientRate * 0.25\n",
+        "            + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25\n",
+        "            + LEAST(DeceasedPatientRate * 50, 1.0) * 0.20\n",
+        "        ) AS Risk_Score\n",
+        "    FROM capstone.bronze.provider_lookup\n",
+        ") scored\n",
+        "ORDER BY Risk_Score DESC, Total_Exposure DESC\n",
+        "LIMIT 20"
+      ]
+    },
+    {
+      "name": "ds_12_data_split_volume",
+      "displayName": "12. Train vs Holdout Volume",
+      "queryLines": [
+        "SELECT\n",
+        "    'Train Claims' AS Data_Split,\n",
+        "    COUNT(*) AS Claim_Count,\n",
+        "    COUNT(DISTINCT Provider) AS Provider_Count\n",
+        "FROM capstone.bronze.claims_engineered\n",
+        "UNION ALL\n",
+        "SELECT\n",
+        "    'Holdout Claims' AS Data_Split,\n",
+        "    COUNT(*) AS Claim_Count,\n",
+        "    COUNT(DISTINCT Provider) AS Provider_Count\n",
+        "FROM capstone.bronze.claims_engineered_test"
       ]
     },
     {
@@ -240,10 +300,10 @@
         "    '1. Total Providers Evaluated' AS Funnel_Stage, COUNT(*) AS Volume FROM capstone.bronze.provider_lookup\n",
         "UNION ALL\n",
         "SELECT \n",
-        "    '2. Flagged as High/Medium Risk', COUNT(*) FROM capstone.bronze.provider_lookup WHERE Risk_Score >= 0.40\n",
+        "    '2. Flagged as High/Medium Risk', COUNT(*) FROM capstone.bronze.provider_lookup WHERE ((AvgClaimAmt / 57000.0) * 0.30 + InpatientRate * 0.25 + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25 + LEAST(DeceasedPatientRate * 50, 1.0) * 0.20) >= 0.40\n",
         "UNION ALL\n",
         "SELECT \n",
-        "    '3. Sent to LLM for Review', COUNT(*) FROM capstone.bronze.provider_lookup WHERE Risk_Score >= 0.75\n",
+        "    '3. Sent to LLM for Review', COUNT(*) FROM capstone.bronze.provider_lookup WHERE ((AvgClaimAmt / 57000.0) * 0.30 + InpatientRate * 0.25 + ((ClaimsPerBeneficiary - 1) / 9.0) * 0.25 + LEAST(DeceasedPatientRate * 50, 1.0) * 0.20) >= 0.75\n",
         "ORDER BY Funnel_Stage"
       ]
     },
@@ -251,15 +311,15 @@
       "name": "ff29c32d",
       "displayName": "Claim Feature Importance Rankings Summary",
       "queryLines": [
-        "SELECT 'ClaimAmtZScore' AS Feature, 0.42 AS Importance\n",
+        "SELECT 'AvgClaimAmt' AS Feature, 0.31 AS Importance\n",
         "UNION ALL\n",
-        "SELECT 'ChronicConditionCount', 0.31\n",
+        "SELECT 'ClaimCount', 0.22\n",
         "UNION ALL\n",
-        "SELECT 'ProviderAvgClaimAmt', 0.27\n",
+        "SELECT 'ClaimsPerBeneficiary', 0.19\n",
         "UNION ALL\n",
-        "SELECT 'ClaimDuration', 0.21\n",
+        "SELECT 'InpatientRate', 0.16\n",
         "UNION ALL\n",
-        "SELECT 'DiagnosisCodeCount', 0.18"
+        "SELECT 'DeceasedPatientRate', 0.12"
       ]
     },
     {
@@ -358,8 +418,8 @@
                       "expression": "SUM(`Provider_Count`)"
                     },
                     {
-                      "name": "Provider_Count",
-                      "expression": "`Provider_Count`"
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
                     }
                   ],
                   "disaggregated": false
@@ -427,19 +487,19 @@
                   "displayName": "Legitimate vs Fraud Claims"
                 },
                 "color": {
-                  "fieldName": "Provider_Count",
+                  "fieldName": "Provider_Type",
                   "scale": {
                     "type": "categorical",
                     "mappings": [
                       {
-                        "value": 4904,
+                        "value": "Legitimate",
                         "color": {
                           "themeColorType": "visualizationColors",
                           "position": 4
                         }
                       },
                       {
-                        "value": 3913,
+                        "value": "Fraudulent",
                         "color": {
                           "themeColorType": "visualizationColors",
                           "position": 6
@@ -466,7 +526,7 @@
             "name": "4dfd7a3a",
             "multilineTextboxSpec": {
               "lines": [
-                "\n# \ud83d\udee1\ufe0f Predictive Denial Prevention AI\n**Executive Analytics Dashboard**  \n*Identifying fraudulent and irregular provider billing patterns to minimize financial exposure.*\n"
+                "\n# Predictive Denial Prevention AI\n**Executive Fraud and Cost Exposure Dashboard**  \n*A presentation-ready view of provider risk, financial exposure, and model-driven review priorities.*\n"
               ]
             }
           },
@@ -607,6 +667,10 @@
                     {
                       "name": "sum(Claim_Count)",
                       "expression": "SUM(`Claim_Count`)"
+                    },
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
                     }
                   ],
                   "disaggregated": false
@@ -630,18 +694,9 @@
                   }
                 },
                 "color": {
-                  "fieldName": "Amount_Bucket",
+                  "fieldName": "Provider_Type",
                   "scale": {
-                    "type": "categorical",
-                    "mappings": [
-                      {
-                        "value": "< $1K",
-                        "color": {
-                          "themeColorType": "visualizationColors",
-                          "position": 10
-                        }
-                      }
-                    ]
+                    "type": "categorical"
                   }
                 }
               }
@@ -974,16 +1029,42 @@
     },
     {
       "name": "c8b3e7c4",
-      "displayName": "Untitled page 1",
+      "displayName": "Model and Operations Story",
       "layout": [
         {
           "widget": {
-            "name": "fc0809b1",
+            "name": "ops_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "\n# Model and Action Queue\n**From model quality to operational triage:** where to review first, and why.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_model_auc",
             "queries": [
               {
                 "name": "main_query",
                 "query": {
                   "datasetName": "6bf55163",
+                  "fields": [
+                    {
+                      "name": "Model",
+                      "expression": "`Model`"
+                    },
+                    {
+                      "name": "sum(ROC_AUC)",
+                      "expression": "SUM(`ROC_AUC`)"
+                    }
+                  ],
                   "disaggregated": false
                 }
               }
@@ -991,14 +1072,581 @@
             "spec": {
               "version": 3,
               "widgetType": "bar",
-              "encodings": {}
+              "frame": {
+                "showTitle": true,
+                "title": "Model Comparison (ROC-AUC)"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(ROC_AUC)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "Model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "Model",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
             }
           },
           "position": {
             "x": 0,
-            "y": 0,
-            "width": 11,
+            "y": 2,
+            "width": 4,
             "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_funnel",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a7749ccc",
+                  "fields": [
+                    {
+                      "name": "Funnel_Stage",
+                      "expression": "`Funnel_Stage`"
+                    },
+                    {
+                      "name": "sum(Provider_Count)",
+                      "expression": "SUM(`Provider_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Provider Risk Funnel"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Funnel_Stage",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Provider_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Funnel_Stage",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_risk_tiers",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_10_ai_risk",
+                  "fields": [
+                    {
+                      "name": "Risk_Tier",
+                      "expression": "`Risk_Tier`"
+                    },
+                    {
+                      "name": "sum(Provider_Count)",
+                      "expression": "SUM(`Provider_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Composite Risk Tier Distribution"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Risk_Tier",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Provider_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Risk_Tier",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_state_hotspots",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_8_regional_fraud",
+                  "fields": [
+                    {
+                      "name": "State",
+                      "expression": "`State`"
+                    },
+                    {
+                      "name": "sum(Fraud_Count)",
+                      "expression": "SUM(`Fraud_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Top Fraud-Prone States"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "State",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Fraud_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "State",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_age_segments",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_9_demographics",
+                  "fields": [
+                    {
+                      "name": "Age_Group",
+                      "expression": "`Age_Group`"
+                    },
+                    {
+                      "name": "sum(Patient_Count)",
+                      "expression": "SUM(`Patient_Count`)"
+                    },
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Age Group Vulnerability Mix"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Age_Group",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Patient_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 8,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_duration",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_6_care_duration",
+                  "fields": [
+                    {
+                      "name": "ClaimDuration",
+                      "expression": "`ClaimDuration`"
+                    },
+                    {
+                      "name": "sum(Claim_Count)",
+                      "expression": "SUM(`Claim_Count`)"
+                    },
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Claim Duration Risk Spread (0-30 days)"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "ClaimDuration",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Claim_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 8,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_claim_setting",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_5_inpatient_outpatient",
+                  "fields": [
+                    {
+                      "name": "Claim_Setting",
+                      "expression": "`Claim_Setting`"
+                    },
+                    {
+                      "name": "sum(Claim_Count)",
+                      "expression": "SUM(`Claim_Count`)"
+                    },
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Inpatient vs Outpatient Fraud Mix"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Claim_Setting",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Claim_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 15,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_split_volume",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_12_data_split_volume",
+                  "fields": [
+                    {
+                      "name": "Data_Split",
+                      "expression": "`Data_Split`"
+                    },
+                    {
+                      "name": "sum(Claim_Count)",
+                      "expression": "SUM(`Claim_Count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Train vs Holdout Claim Volume"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Data_Split",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Claim_Count)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Data_Split",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 15,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_upcoding",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_7_upcoding",
+                  "fields": [
+                    {
+                      "name": "Provider_Type",
+                      "expression": "`Provider_Type`"
+                    },
+                    {
+                      "name": "sum(Avg_Conditions_Per_Patient)",
+                      "expression": "SUM(`Avg_Conditions_Per_Patient`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Chronic Condition Load by Risk Class"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(Avg_Conditions_Per_Patient)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "Provider_Type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 15,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ops_action_queue",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_11_provider_action_queue",
+                  "fields": [
+                    {
+                      "name": "Provider",
+                      "expression": "`Provider`"
+                    },
+                    {
+                      "name": "sum(Risk_Score)",
+                      "expression": "SUM(`Risk_Score`)"
+                    },
+                    {
+                      "name": "Risk_Band",
+                      "expression": "`Risk_Band`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "frame": {
+                "showTitle": true,
+                "title": "Top 20 Provider Action Queue (Composite Risk Score)"
+              },
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(Risk_Score)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "Provider",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "fieldName": "Risk_Band",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 22,
+            "width": 12,
+            "height": 8
           }
         }
       ],
