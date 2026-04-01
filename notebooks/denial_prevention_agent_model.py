@@ -13,8 +13,9 @@ import requests
 import shap
 from mlflow.models import set_model
 from mlflow.pyfunc import ChatAgent
-from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse
+from mlflow.types.agent import ChatAgentMessage, ChatAgentResponse, ChatAgentChunk
 
+mlflow.set_registry_uri("databricks-uc")
 
 FHIR_BASE_URL = os.getenv("FHIR_BASE_URL", "https://hapi.fhir.org/baseR4")
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
@@ -199,6 +200,10 @@ def _configure_mlflow():
 
 def _get_mlflow_client() -> mlflow.tracking.MlflowClient:
     _configure_mlflow()
+    host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+    token = os.getenv("DATABRICKS_TOKEN", "")
+    if host and token:
+        os.environ.setdefault("MLFLOW_TRACKING_TOKEN", token)
     return mlflow.tracking.MlflowClient(
         tracking_uri=MLFLOW_TRACKING_URI,
         registry_uri=MLFLOW_REGISTRY_URI,
@@ -220,20 +225,18 @@ def _get_databricks_host() -> str:
 
 
 def _get_openai_client():
-    from databricks.sdk import WorkspaceClient
-
-    ws = WorkspaceClient()
-    try:
-        return ws.serving_endpoints.get_open_ai_client()
-    except Exception:
-        from openai import OpenAI as DatabricksOpenAI
-        api_key = ws.config.token or os.getenv("DATABRICKS_TOKEN")
-        if not api_key:
-            raise RuntimeError("No Databricks API token available for LLM endpoint call.")
-        return DatabricksOpenAI(
-            base_url=f"{_get_databricks_host()}/serving-endpoints",
-            api_key=api_key,
+    from openai import OpenAI
+    # In serving containers, these are auto-injected
+    host = os.getenv("DATABRICKS_HOST", "").rstrip("/")
+    token = os.getenv("DATABRICKS_TOKEN", "")
+    if host and token:
+        return OpenAI(
+            base_url=f"{host}/serving-endpoints",
+            api_key=token,
         )
+    # Fallback for notebook testing
+    from databricks.sdk import WorkspaceClient
+    return WorkspaceClient().serving_endpoints.get_open_ai_client()
 
 
 def _fhir_get(
@@ -777,6 +780,22 @@ class DenialPreventionAgent(ChatAgent):
                 id=str(uuid.uuid4()),
             )
         ])
+    
+    def predict_stream(
+        self,
+        messages: list[ChatAgentMessage],
+        context=None,
+        custom_inputs=None,
+    ):
+        response = self.predict(messages, context, custom_inputs)
+        for msg in response.messages:
+            yield ChatAgentChunk(
+                delta=ChatAgentMessage(
+                    role=msg.role,
+                    content=msg.content,
+                    id=msg.id,
+                ),
+            )
 
 
 set_model(DenialPreventionAgent())
